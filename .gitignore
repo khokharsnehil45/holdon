@@ -1,0 +1,7 @@
+/target
+.fastembed_cache/
+*.db
+*.db-wal
+*.db-shm
+*.pdf
+*.txt

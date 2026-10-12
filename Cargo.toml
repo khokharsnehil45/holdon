@@ -1,0 +1,31 @@
+[package]
+name = "holdon"
+version = "1.0.0"
+edition = "2021"
+description = "A local-first, single-binary vector database and retrieval CLI tool"
+authors = ["holdon contributors"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# CLI framework
+clap = { version = "4.5", features = ["derive"] }
+
+# SQLite & vector extension
+rusqlite = { version = "0.31.0", features = ["bundled"] }
+sqlite-vec = "0.1.9"
+
+# Local embeddings
+fastembed = "7.1.1"
+
+# Serialization & binary casting
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bytemuck = "1.21.0"
+
+# Error handling
+anyhow = "1.0.95"
+thiserror = "2.0.11"
+
+# Filesystem & paths
+dirs = "6.0"
+pdf-extract = "0.12.1"
