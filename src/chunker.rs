@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use crate::embedder::Embedder;
 use crate::error::HoldonError;
 
@@ -8,6 +9,7 @@ pub struct TextChunk {
 }
 
 /// Splits input text into sliding windows of characters with overlap (fixed-size chunking).
+/// Uses Rayon parallel iterators across sliding window chunk boundaries for multi-core performance.
 pub fn chunk_text_fixed(
     text: &str,
     chunk_size: usize,
@@ -30,27 +32,40 @@ pub fn chunk_text_fixed(
     }
 
     let step = chunk_size - overlap;
-    let mut chunks = Vec::new();
+    let total_chars = chars.len();
+
+    // Compute chunk window start indices
+    let mut starts = Vec::new();
     let mut start = 0;
+    while start < total_chars {
+        starts.push(start);
+        let end = (start + chunk_size).min(total_chars);
+        if end == total_chars {
+            break;
+        }
+        start += step;
+    }
+
+    // Extract chunk strings in parallel across available CPU cores
+    let raw_chunks: Vec<String> = starts
+        .into_par_iter()
+        .map(|s| {
+            let end = (s + chunk_size).min(total_chars);
+            chars[s..end].iter().collect::<String>()
+        })
+        .collect();
+
+    // Filter non-empty and assign sequential indices
+    let mut chunks = Vec::with_capacity(raw_chunks.len());
     let mut chunk_index = 0;
-
-    while start < chars.len() {
-        let end = (start + chunk_size).min(chars.len());
-        let chunk_chars = &chars[start..end];
-        let chunk_string: String = chunk_chars.iter().collect();
-
-        if !chunk_string.trim().is_empty() {
+    for content in raw_chunks {
+        if !content.trim().is_empty() {
             chunks.push(TextChunk {
-                content: chunk_string,
+                content,
                 chunk_index,
             });
             chunk_index += 1;
         }
-
-        if end == chars.len() {
-            break;
-        }
-        start += step;
     }
 
     Ok(chunks)
@@ -73,53 +88,55 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Breaks text into sentences or natural segments based on punctuation (. ! ? \n\n).
+/// Splits text into natural paragraph boundaries in parallel, then gathers sentences.
 pub fn split_sentences(text: &str) -> Vec<String> {
-    let mut sentences = Vec::new();
-    let mut current = String::new();
+    // Split into paragraphs / major blocks
+    let paragraphs: Vec<&str> = text.split("\n\n").collect();
 
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
+    // Process sentence parsing across paragraphs in parallel
+    let nested: Vec<Vec<String>> = paragraphs
+        .into_par_iter()
+        .map(|para| {
+            let mut sents = Vec::new();
+            let mut current = String::new();
+            let chars: Vec<char> = para.chars().collect();
+            let len = chars.len();
+            let mut i = 0;
 
-    while i < len {
-        let c = chars[i];
-        current.push(c);
+            while i < len {
+                let c = chars[i];
+                current.push(c);
 
-        let is_term = c == '.' || c == '!' || c == '?' || c == '\n';
-        if is_term {
-            // Check double newline
-            let is_double_newline = c == '\n' && (i + 1 < len && chars[i + 1] == '\n');
-            let is_sentence_end = (c == '.' || c == '!' || c == '?')
-                && (i + 1 == len || chars[i + 1].is_whitespace());
+                let is_term = (c == '.' || c == '!' || c == '?' || c == '\n')
+                    && (i + 1 == len || chars[i + 1].is_whitespace());
 
-            if is_double_newline || is_sentence_end {
-                let trimmed = current.trim();
-                if !trimmed.is_empty() {
-                    sentences.push(trimmed.to_string());
+                if is_term {
+                    let trimmed = current.trim();
+                    if !trimmed.is_empty() {
+                        sents.push(trimmed.to_string());
+                    }
+                    current.clear();
                 }
-                current.clear();
-                if is_double_newline {
-                    i += 1; // skip consecutive newline
-                }
+                i += 1;
             }
-        }
-        i += 1;
-    }
 
-    let trimmed = current.trim();
-    if !trimmed.is_empty() {
-        sentences.push(trimmed.to_string());
-    }
+            let trimmed = current.trim();
+            if !trimmed.is_empty() {
+                sents.push(trimmed.to_string());
+            }
 
-    sentences
+            sents
+        })
+        .collect();
+
+    nested.into_iter().flatten().collect()
 }
 
 /// Semantic chunker:
-/// 1. Splits text into coherent sentences.
-/// 2. Embeds each sentence.
-/// 3. Computes cosine similarity between consecutive sentences.
-/// 4. When semantic similarity drops below `similarity_threshold` (or size bounds exceeded),
-///    starts a new chunk.
+/// 1. Splits text into coherent sentences in parallel.
+/// 2. Batch embeds all sentences using ONNX.
+/// 3. Computes consecutive similarities in parallel.
+/// 4. Groups sentences into semantic units when meaning shifts below threshold.
 pub fn chunk_text_semantic(
     text: &str,
     embedder: &mut Embedder,
@@ -139,8 +156,14 @@ pub fn chunk_text_semantic(
         }]);
     }
 
-    // Embed all individual sentences in a single batch
+    // Embed all individual sentences in a single optimized batch
     let embeddings = embedder.embed_batch(&sentences)?;
+
+    // Compute pairwise cosine similarities in parallel across threads
+    let sims: Vec<f32> = (0..sentences.len() - 1)
+        .into_par_iter()
+        .map(|i| cosine_similarity(&embeddings[i], &embeddings[i + 1]))
+        .collect();
 
     let mut chunks = Vec::new();
     let mut current_chunk = Vec::new();
@@ -157,11 +180,10 @@ pub fn chunk_text_semantic(
             continue;
         }
 
-        let sim = cosine_similarity(&embeddings[i - 1], &embeddings[i]);
+        let sim = sims[i - 1];
         let would_exceed_max = (current_chars + 1 + sent_len) > max_chunk_chars;
         let meets_min = current_chars >= min_chunk_chars;
 
-        // Split condition: semantic distance jump OR max size exceeded
         let should_split = (meets_min && sim < similarity_threshold) || would_exceed_max;
 
         if should_split {

@@ -29,3 +29,4 @@ thiserror = "2.0.11"
 # Filesystem & paths
 dirs = "6.0"
 pdf-extract = "0.12.1"
+rayon = "1.12.0"

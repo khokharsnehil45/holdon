@@ -17,6 +17,7 @@ fn main() -> Result<()> {
             eprintln!("Error: {}\n", err_msg);
             eprintln!("Usage examples:");
             eprintln!("  holdon --add doc.pdf --semantic");
+            eprintln!("  holdon --add doc.pdf --threads 8");
             eprintln!("  holdon --query \"search query\" --k 3 --hybrid");
             eprintln!("  holdon --query \"search query\" --k 3 --hybrid --rerank");
             eprintln!("  holdon query \"search query\" -k 3 --hybrid --json");
@@ -31,8 +32,16 @@ fn main() -> Result<()> {
             threshold,
             chunk_size,
             overlap,
+            threads,
         } => {
             let start_time = Instant::now();
+
+            // Configure Rayon thread pool if custom thread count requested
+            if threads > 0 {
+                let _ = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build_global();
+            }
 
             let canonical_path = file_path
                 .canonicalize()
@@ -88,12 +97,14 @@ fn main() -> Result<()> {
                 .context("Failed to insert chunk records into database transaction")?;
 
             let elapsed = start_time.elapsed();
+            let active_threads = if threads > 0 { threads } else { rayon::current_num_threads() };
 
             println!("Successfully ingested file:");
-            println!("  Source file:   {}", file_str);
-            println!("  Mode:          {}", if semantic { format!("Semantic (threshold: {:.2})", threshold) } else { "Fixed sliding-window".to_string() });
-            println!("  Total chunks:  {}", total_chunks);
-            println!("  Time taken:    {:.2?}", elapsed);
+            println!("  Source file:    {}", file_str);
+            println!("  Mode:           {}", if semantic { format!("Parallel Semantic (threshold: {:.2})", threshold) } else { "Parallel Fixed sliding-window".to_string() });
+            println!("  Worker threads: {}", active_threads);
+            println!("  Total chunks:   {}", total_chunks);
+            println!("  Time taken:     {:.2?}", elapsed);
         }
 
         Action::Query {

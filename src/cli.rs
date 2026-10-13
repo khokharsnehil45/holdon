@@ -38,6 +38,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 50, value_name = "CHARS")]
     pub overlap: usize,
 
+    /// Number of worker threads for parallel chunking (default: 0 = all CPU cores)
+    #[arg(long, default_value_t = 0, value_name = "THREADS")]
+    pub threads: usize,
+
     /// Number of top similar chunks to return (supports -k, --k, --top-k; default: 5)
     #[arg(short = 'k', long = "k", alias = "top-k", default_value_t = 5, value_name = "TOP_K")]
     pub k: usize,
@@ -86,6 +90,10 @@ pub enum Commands {
         /// Overlap character count between consecutive chunks (default: 50)
         #[arg(long, default_value_t = 50, value_name = "CHARS")]
         overlap: usize,
+
+        /// Number of worker threads for parallel chunking (default: 0 = all CPU cores)
+        #[arg(long, default_value_t = 0, value_name = "THREADS")]
+        threads: usize,
     },
 
     /// Query the vector database for semantically similar chunks
@@ -124,6 +132,7 @@ pub enum Action {
         threshold: f32,
         chunk_size: usize,
         overlap: usize,
+        threads: usize,
     },
     Query {
         query_text: String,
@@ -145,12 +154,14 @@ impl Cli {
                     threshold,
                     chunk_size,
                     overlap,
+                    threads,
                 } => Ok(Action::Add {
                     file_path,
                     semantic,
                     threshold,
                     chunk_size,
                     overlap,
+                    threads,
                 }),
                 Commands::Query {
                     query_text,
@@ -175,6 +186,7 @@ impl Cli {
                 threshold: self.threshold,
                 chunk_size: self.chunk_size,
                 overlap: self.overlap,
+                threads: self.threads,
             })
         } else if let Some(query_text) = self.query {
             Ok(Action::Query {
